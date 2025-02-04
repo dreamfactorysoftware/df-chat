@@ -8,7 +8,11 @@ if (!process.env.OPENAI_API_KEY) {
   throw new Error('Missing OPENAI_API_KEY environment variable');
 }
 
-export const maxDuration = 300; // Set max duration to 300 seconds for Netlify
+// Configure for Netlify Edge Functions
+export const config = {
+  runtime: 'edge',
+  regions: ['iad1'], // Use specific region for better performance
+};
 
 export async function POST(request: Request) {
   try {
@@ -16,28 +20,18 @@ export async function POST(request: Request) {
     const apiKey = cookieStore.get('df_api_key')?.value;
 
     if (!apiKey) {
-      return new Response(
-        JSON.stringify({ error: 'DreamFactory session not found' }),
-        { 
-          status: 401,
-          headers: {
-            'Content-Type': 'application/json',
-          }
-        }
+      return NextResponse.json(
+        { error: 'DreamFactory session not found' },
+        { status: 401 }
       );
     }
 
     const { message } = await request.json();
 
     if (!message) {
-      return new Response(
-        JSON.stringify({ error: 'Message is required' }),
-        { 
-          status: 400,
-          headers: {
-            'Content-Type': 'application/json',
-          }
-        }
+      return NextResponse.json(
+        { error: 'Message is required' },
+        { status: 400 }
       );
     }
 
@@ -107,29 +101,15 @@ Guidelines:
       finalResponse = response.replace(/<thinking>[\s\S]*?<\/thinking>/, '').trim();
     }
 
-    // Use standard Response object instead of NextResponse
-    return new Response(
-      JSON.stringify({ 
-        message: finalResponse,
-        thinking: thinking 
-      }),
-      { 
-        status: 200,
-        headers: {
-          'Content-Type': 'application/json',
-        }
-      }
-    );
+    return NextResponse.json({ 
+      message: finalResponse,
+      thinking: thinking 
+    });
   } catch (error) {
     console.error('Chat error:', error);
-    return new Response(
-      JSON.stringify({ error: 'Failed to process chat message' }),
-      { 
-        status: 500,
-        headers: {
-          'Content-Type': 'application/json',
-        }
-      }
+    return NextResponse.json(
+      { error: 'Failed to process chat message' },
+      { status: 500 }
     );
   }
 } 

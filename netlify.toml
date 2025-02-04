@@ -1,0 +1,15 @@
+[build]
+  command = "npm run build"
+  publish = ".next"
+
+[build.environment]
+  NEXT_USE_NETLIFY_EDGE = "true"
+  NEXT_PRIVATE_TARGET = "server"
+
+[[edge_functions]]
+  function = "api/chat"
+  path = "/api/chat"
+
+[functions]
+  node_bundler = "esbuild"
+  external_node_modules = ["@node-rs/*"] 
