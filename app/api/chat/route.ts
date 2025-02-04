@@ -8,11 +8,9 @@ if (!process.env.OPENAI_API_KEY) {
   throw new Error('Missing OPENAI_API_KEY environment variable');
 }
 
-// Configure for Netlify Edge Functions
-export const config = {
-  runtime: 'edge',
-  regions: ['iad1'], // Use specific region for better performance
-};
+// Configure for Netlify Edge Functions using new Next.js format
+export const runtime = "edge";
+export const preferredRegion = ["iad1"];
 
 export async function POST(request: Request) {
   try {
