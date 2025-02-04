@@ -8,24 +8,36 @@ if (!process.env.OPENAI_API_KEY) {
   throw new Error('Missing OPENAI_API_KEY environment variable');
 }
 
+export const maxDuration = 300; // Set max duration to 300 seconds for Netlify
+
 export async function POST(request: Request) {
   try {
     const cookieStore = cookies();
     const apiKey = cookieStore.get('df_api_key')?.value;
 
     if (!apiKey) {
-      return NextResponse.json(
-        { error: 'DreamFactory session not found' },
-        { status: 401 }
+      return new Response(
+        JSON.stringify({ error: 'DreamFactory session not found' }),
+        { 
+          status: 401,
+          headers: {
+            'Content-Type': 'application/json',
+          }
+        }
       );
     }
 
     const { message } = await request.json();
 
     if (!message) {
-      return NextResponse.json(
-        { error: 'Message is required' },
-        { status: 400 }
+      return new Response(
+        JSON.stringify({ error: 'Message is required' }),
+        { 
+          status: 400,
+          headers: {
+            'Content-Type': 'application/json',
+          }
+        }
       );
     }
 
@@ -95,15 +107,29 @@ Guidelines:
       finalResponse = response.replace(/<thinking>[\s\S]*?<\/thinking>/, '').trim();
     }
 
-    return NextResponse.json({ 
-      message: finalResponse,
-      thinking: thinking 
-    });
+    // Use standard Response object instead of NextResponse
+    return new Response(
+      JSON.stringify({ 
+        message: finalResponse,
+        thinking: thinking 
+      }),
+      { 
+        status: 200,
+        headers: {
+          'Content-Type': 'application/json',
+        }
+      }
+    );
   } catch (error) {
     console.error('Chat error:', error);
-    return NextResponse.json(
-      { error: 'Failed to process chat message' },
-      { status: 500 }
+    return new Response(
+      JSON.stringify({ error: 'Failed to process chat message' }),
+      { 
+        status: 500,
+        headers: {
+          'Content-Type': 'application/json',
+        }
+      }
     );
   }
 } 
