@@ -23,19 +23,30 @@ export class DreamFactoryTool {
   private baseUrl: string;
   private cachedSchema: Record<string, DreamFactorySchema> = {};
   private cachedTableSchemas: Record<string, Record<string, any>> = {};
+  private requestedEndpoints: string[] = [];
 
   constructor(apiKey: string, baseUrl: string) {
     this.apiKey = apiKey;
     this.baseUrl = baseUrl.replace(/\/+$/, '');
+    this.requestedEndpoints = [];
     console.log('DreamFactoryTool initialized with:', {
       baseUrl: this.baseUrl,
     });
+  }
+
+  getRequestedEndpoints(): string[] {
+    return this.requestedEndpoints;
+  }
+
+  clearRequestedEndpoints(): void {
+    this.requestedEndpoints = [];
   }
 
   private async makeRequest<T = any>(endpoint: string, options: RequestInit = {}): Promise<T> {
     const cleanEndpoint = endpoint.replace(/^\/+/, '');
     const url = `${this.baseUrl}/api/v2/${cleanEndpoint}`;
     
+    this.requestedEndpoints.push(`${this.baseUrl}/api/v2/${cleanEndpoint}`);
     console.log('Making request to:', url);
     
     try {
@@ -122,57 +133,65 @@ export class DreamFactoryTool {
   async queryTable<T = any>(
     serviceName: string,
     tableName: string,
-    queryParams: QueryParams = {}
+    params: {
+      filter?: string;
+      limit?: number;
+      offset?: number;
+      order?: string;
+      fields?: string[];
+      include_count?: boolean;
+      include_schema?: boolean;
+      related?: string;
+    } = {}
   ): Promise<DreamFactoryResponse<T>> {
-    // First verify the table exists
-    const tables = await this.listTables(serviceName);
-    if (!tables.includes(tableName)) {
-      console.error(`Table "${tableName}" does not exist in service "${serviceName}". Available tables:`, tables);
-      throw new Error(`Table "${tableName}" does not exist in service "${serviceName}". Available tables: ${tables.join(', ')}`);
+    const queryParams = new URLSearchParams();
+
+    if (params.filter) {
+      let formattedFilter = params.filter
+        .replace(/\s*=\s*/g, '=')
+        .replace(/\(\s+/g, '(')
+        .replace(/\s+\)/g, ')')
+        .replace(/\s+and\s+/gi, ' and ');
+
+      if (!formattedFilter.startsWith('(')) {
+        formattedFilter = `(${formattedFilter})`;
+      }
+
+      queryParams.set('filter', formattedFilter);
     }
 
-    const params = new URLSearchParams();
-    
-    if (queryParams.filter) {
-      params.append('filter', queryParams.filter);
-    }
-    if (queryParams.limit) {
-      params.append('limit', queryParams.limit.toString());
-    }
-    if (queryParams.offset) {
-      params.append('offset', queryParams.offset.toString());
-    }
-    if (queryParams.order) {
-      params.append('order', queryParams.order);
-    }
-    if (queryParams.fields) {
-      params.append('fields', queryParams.fields.join(','));
-    }
-    if (queryParams.include_count !== undefined) {
-      params.append('include_count', queryParams.include_count.toString());
-    }
-    if (queryParams.include_schema !== undefined) {
-      params.append('include_schema', queryParams.include_schema.toString());
-    }
+    if (params.limit) queryParams.set('limit', params.limit.toString());
+    if (params.offset) queryParams.set('offset', params.offset.toString());
+    if (params.order) queryParams.set('order', params.order);
+    if (params.fields) queryParams.set('fields', params.fields.join(','));
+    if (params.include_count) queryParams.set('include_count', 'true');
+    if (params.include_schema) queryParams.set('include_schema', 'true');
+    if (params.related) queryParams.set('related', params.related);
 
-    const endpoint = `${serviceName}/_table/${tableName}${params.toString() ? '?' + params.toString() : ''}`;
-    console.log('Querying table with endpoint:', endpoint);
+    const endpoint = `${serviceName}/_table/${tableName}${
+      queryParams.toString() ? `?${queryParams.toString()}` : ''
+    }`;
+
     return this.makeRequest<DreamFactoryResponse<T>>(endpoint);
   }
 
-  // Helper method to search any table by field value
   async searchTableByField(
     serviceName: string,
     tableName: string,
     fieldName: string,
     value: string | number,
-    exact: boolean = true
+    exact: boolean = true,
+    related?: string
   ): Promise<DreamFactoryResponse<any>> {
-    const filter = exact 
-      ? `${fieldName} = '${value}'`
-      : `${fieldName} like '${value}%'`;
-    
-    return this.queryTable(serviceName, tableName, { filter });
+    const filter = exact
+      ? `(${fieldName}=${typeof value === 'string' ? `'${value}'` : value})`
+      : `(${fieldName} like '${value}%')`;
+
+    return this.queryTable(serviceName, tableName, {
+      filter,
+      related,
+      include_schema: true,
+    });
   }
 
   async searchByName(
@@ -180,36 +199,25 @@ export class DreamFactoryTool {
     tableName: string,
     name: string,
     firstNameField: string = 'first_name',
-    lastNameField: string = 'last_name'
+    lastNameField: string = 'last_name',
+    related?: string
   ): Promise<DreamFactoryResponse<any>> {
-    // First verify the table exists
-    const tables = await this.listTables(serviceName);
-    if (!tables.includes(tableName)) {
-      throw new Error(`Table "${tableName}" does not exist in service "${serviceName}". Available tables: ${tables.join(', ')}`);
-    }
-
-    // Then verify the fields exist in the schema
-    const schema = await this.getTableSchema(serviceName, tableName);
-    const fields = schema.field?.map((f: any) => f.name) || [];
-    
-    if (!fields.includes(firstNameField) || !fields.includes(lastNameField)) {
-      throw new Error(`Fields "${firstNameField}" and/or "${lastNameField}" do not exist in table "${tableName}". Available fields: ${fields.join(', ')}`);
-    }
-
-    // Split the name into parts and build the filter
-    const terms = name.split(' ').filter(term => term.length > 0);
+    const nameParts = name.split(' ');
     let filter: string;
-    
-    if (terms.length >= 2) {
-      // If we have at least two terms, assume first name and last name
-      filter = `(${firstNameField} like '${terms[0]}%') and (${lastNameField} like '${terms[1]}%')`;
+
+    if (nameParts.length > 1) {
+      // If name has multiple parts, search both first and last name
+      filter = `(${firstNameField} like '${nameParts[0]}%') and (${lastNameField} like '${nameParts[1]}%')`;
     } else {
-      // If we only have one term, search both fields
-      filter = `${firstNameField} like '${terms[0]}%' or ${lastNameField} like '${terms[0]}%'`;
+      // If single name part, search in both fields
+      filter = `(${firstNameField} like '${name}%') or (${lastNameField} like '${name}%')`;
     }
-    
-    console.log('Using name search filter:', filter);
-    return this.queryTable(serviceName, tableName, { filter });
+
+    return this.queryTable(serviceName, tableName, {
+      filter,
+      related,
+      include_schema: true,
+    });
   }
 
   // Other table methods...

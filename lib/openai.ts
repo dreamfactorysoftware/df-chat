@@ -69,24 +69,28 @@ export class OpenAIService {
     },
     {
       name: 'queryTable',
-      description: 'Query a table in a service. Make sure the table exists by using listTables first.',
+      description: 'Query a table in a service with optional related data. Make sure the table exists by using listTables first.',
       parameters: {
         type: 'object',
         properties: {
           serviceName: {
             type: 'string',
-            description: 'The name of the service containing the table (e.g., "mysql")',
+            description: 'The name of the service containing the table (e.g., "sqlserver")',
           },
           tableName: {
             type: 'string',
-            description: 'The name of the table to query (e.g., "employees"). Must be a table that exists in the service.',
+            description: 'The name of the table to query (e.g., "Application.Cities")',
           },
           queryParams: {
             type: 'object',
             properties: {
               filter: { 
                 type: 'string',
-                description: 'SQL-like filter string (e.g., "first_name like S%" or "emp_no = 123")'
+                description: 'SQL-like filter string. For multiple conditions, use parentheses and proper spacing. Example: "(CityName=\'Abbeville\') and (StateProvinceID=1)"'
+              },
+              related: {
+                type: 'string',
+                description: 'Comma-separated list of related tables to include (e.g., "Application.StateProvinces_by_StateProvinceID")'
               },
               limit: { type: 'number' },
               offset: { type: 'number' },
@@ -102,7 +106,7 @@ export class OpenAIService {
     },
     {
       name: 'searchTableByField',
-      description: 'Search any table by a specific field value',
+      description: 'Search any table by a specific field value with optional related data',
       parameters: {
         type: 'object',
         properties: {
@@ -127,23 +131,27 @@ export class OpenAIService {
             description: 'Whether to do an exact match (true) or a "starts with" match (false)',
             default: true,
           },
+          related: {
+            type: 'string',
+            description: 'Comma-separated list of related tables to include',
+          },
         },
         required: ['serviceName', 'tableName', 'fieldName', 'value'],
       },
     },
     {
       name: 'searchByName',
-      description: 'Search for records by name in first name and last name fields. Use this for employee searches in the employees table.',
+      description: 'Search for records by name in first name and last name fields with optional related data',
       parameters: {
         type: 'object',
         properties: {
           serviceName: {
             type: 'string',
-            description: 'The name of the service (e.g., "mysql")',
+            description: 'The name of the service (e.g., "sqlserver")',
           },
           tableName: {
             type: 'string',
-            description: 'The name of the table (e.g., "employees")',
+            description: 'The name of the table (e.g., "Application.Cities")',
           },
           name: {
             type: 'string',
@@ -158,6 +166,10 @@ export class OpenAIService {
             type: 'string',
             description: 'The field name for last name',
             default: 'last_name',
+          },
+          related: {
+            type: 'string',
+            description: 'Comma-separated list of related tables to include',
           },
         },
         required: ['serviceName', 'tableName', 'name'],
@@ -179,16 +191,89 @@ export class OpenAIService {
     };
   }
 
-  async chat(messages: ChatMessage[]): Promise<string> {
+  async chat(messages: ChatMessage[]): Promise<{ response: string; endpoints: string[] }> {
     try {
-      // Add system message to emphasize checking table existence
+      // Clear previous endpoints at the start of each chat
+      this.dreamFactoryTool.clearRequestedEndpoints();
+
+      // Add system message to emphasize checking table existence and handling related data
       const systemMessage: ChatMessage = {
         role: 'system',
-        content: `Before querying any table:
-1. Use listTables to verify the table exists
-2. Use the correct service name (e.g., "mysql")
-3. Use the exact table name from the schema
-4. Never make assumptions about table names`
+        content: `You are an agentic LLM with access to DreamFactory services and general knowledge.
+Your goal is to help users by providing verified answers using only authorized DreamFactory endpoints and data.
+
+IMPORTANT: Always follow this exact process for EVERY request:
+
+<thinking>
+1. Primary Schema Discovery
+   - First, call /_schema endpoint to understand available tables
+   - Then, call /_schema/{primary_table} to get detailed field information
+   - Document the exact field names, types, and relationships
+   - NEVER assume field names - always verify them in the schema first
+
+2. Relationship Analysis
+   - In the schema's 'related' array, look for relationships that might contain needed data
+   - For each relevant relationship, document:
+     * The exact relationship name (e.g., "Application.StateProvinces_by_StateProvinceID")
+     * The relationship type (belongs_to, has_many, many_many)
+     * The target table (ref_table) and field (ref_field)
+   - Call /_schema/{ref_table} to understand the related table's fields
+   - IMPORTANT: The relationship name in the 'related' array is what you must use in the ?related= parameter
+
+3. Query Construction
+   - If data needs to be joined:
+     * ALWAYS use ?related={exact_relationship_name} in your query
+     * Use the exact relationship name from the 'related' array
+     * You can combine multiple relationships with comma separation
+   - Build your filter using verified field names
+   - Example query structure:
+     /_table/{primary_table}?related={relationship_name}&filter={field}={value}
+
+4. Response Processing
+   - When you receive the response:
+     * The related data will be nested under the relationship name
+     * Example: response.resource[0].Application.StateProvinces_by_StateProvinceID.SalesTerritory
+     * Always check if response.resource exists and has data
+     * Always check if the nested relationship data exists
+   - Extract and verify all needed fields
+   - If data is missing, explain what was expected vs what was found
+
+5. Answer Construction
+   - Start with a clear, direct answer to the question
+   - Include the specific values found (e.g., "The sales territory is Southeast")
+   - Show the data path: City → State Province → Sales Territory
+   - If relevant, include additional context from the related data
+
+</thinking>
+
+Then provide your final response in this format:
+
+Answer: [Direct answer to the question]
+
+Data Details:
+- Primary Record: [Key details from the main record]
+- Related Data: [Key details from related records]
+- Data Path: [How the data was connected]
+
+Query Details:
+- Service: [Service name used]
+- Tables: [Tables accessed]
+- Relationships: [Relationships used]
+- Fields: [Fields accessed]
+
+Example Response:
+"Answer: Abbeville (StateProvinceID: 1) is in the Southeast sales territory.
+
+Data Details:
+- Primary Record: Abbeville (CityID: 6)
+- Related Data: State: Alabama, Territory: Southeast
+- Data Path: Cities → StateProvinces → SalesTerritory
+
+Query Details:
+- Service: sqlserver
+- Tables: Application.Cities, Application.StateProvinces
+- Relationships: Application.StateProvinces_by_StateProvinceID
+- Fields: CityName, StateProvinceID, SalesTerritory"`
       };
 
       const response = await this.openai.chat.completions.create({
@@ -231,7 +316,8 @@ export class OpenAIService {
               args.tableName,
               args.fieldName,
               args.value,
-              args.exact
+              args.exact,
+              args.related
             );
             break;
           case 'searchByName':
@@ -240,7 +326,8 @@ export class OpenAIService {
               args.tableName,
               args.name,
               args.firstNameField,
-              args.lastNameField
+              args.lastNameField,
+              args.related
             );
             break;
           default:
@@ -260,10 +347,16 @@ export class OpenAIService {
         return this.chat(messages);
       }
 
-      return message.content || 'No response generated';
+      // Get the endpoints that were called
+      const endpoints = this.dreamFactoryTool.getRequestedEndpoints();
+
+      return {
+        response: message.content || 'No response generated',
+        endpoints
+      };
     } catch (error) {
       console.error('OpenAI error:', error);
-      throw new Error('Failed to generate response');
+      throw error;
     }
   }
 } 
