@@ -58,7 +58,19 @@ export function ChatInterface() {
       const data = await response.json();
 
       if (!response.ok) {
-        throw new Error(data.error || 'Failed to get response');
+        let errorMessage = data.error || 'An error occurred while processing your request.';
+        
+        // Add error message as an assistant message with appropriate styling
+        setMessages((prev) => [
+          ...prev,
+          { 
+            role: 'assistant', 
+            content: `⚠️ ${errorMessage}`,
+            thinking: data.type === 'permission_denied' ? 
+              'I encountered a permissions error while trying to access the database. This usually means your account doesn\'t have the required access level for this information.' : undefined
+          },
+        ]);
+        return;
       }
 
       // Add assistant's response to chat
@@ -71,11 +83,14 @@ export function ChatInterface() {
         },
       ]);
     } catch (error) {
-      toast({
-        title: 'Error',
-        description: error instanceof Error ? error.message : 'Failed to get response',
-        variant: 'destructive',
-      });
+      // Network or other client-side errors
+      setMessages((prev) => [
+        ...prev,
+        { 
+          role: 'assistant', 
+          content: '⚠️ Unable to connect to the server. Please check your internet connection and try again.',
+        },
+      ]);
     } finally {
       setIsLoading(false);
     }

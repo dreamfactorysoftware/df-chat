@@ -1,11 +1,11 @@
 "use client"
 
 import { useState } from "react"
-import { ApiKeyForm } from "@/components/ApiKeyForm"
+import { LoginForm } from "@/components/LoginForm"
 import { ChatInterface } from "@/components/ChatInterface"
 
 export default function Home() {
-  const [hasApiKey, setHasApiKey] = useState(false)
+  const [isAuthenticated, setIsAuthenticated] = useState(false)
 
   return (
     <main className="flex min-h-screen flex-col p-4 md:p-24">
@@ -14,8 +14,8 @@ export default function Home() {
           DreamFactory AI Chat
         </h1>
         
-        {!hasApiKey ? (
-          <ApiKeyForm onSuccess={() => setHasApiKey(true)} />
+        {!isAuthenticated ? (
+          <LoginForm onSuccess={() => setIsAuthenticated(true)} />
         ) : (
           <ChatInterface />
         )}

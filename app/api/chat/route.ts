@@ -3,9 +3,14 @@ import { cookies } from 'next/headers';
 import { DreamFactoryTool } from '@/lib/dreamfactory';
 import { OpenAIService } from '@/lib/openai';
 import { ChatMessage } from '@/lib/types';
+import { AuthService } from '@/lib/auth';
 
 if (!process.env.OPENAI_API_KEY) {
   throw new Error('Missing OPENAI_API_KEY environment variable');
+}
+
+if (!process.env.SERPER_API_KEY) {
+  throw new Error('Missing SERPER_API_KEY environment variable');
 }
 
 // Configure for Netlify Edge Functions using new Next.js format
@@ -15,11 +20,11 @@ export const preferredRegion = ["iad1"];
 export async function POST(request: Request) {
   try {
     const cookieStore = cookies();
-    const apiKey = cookieStore.get('df_api_key')?.value;
+    const sessionToken = cookieStore.get('df_session_token')?.value;
 
-    if (!apiKey) {
+    if (!sessionToken) {
       return NextResponse.json(
-        { error: 'DreamFactory session not found' },
+        { error: 'Not authenticated' },
         { status: 401 }
       );
     }
@@ -34,87 +39,95 @@ export async function POST(request: Request) {
     }
 
     const dreamFactory = new DreamFactoryTool(
-      apiKey,
       process.env.DREAMFACTORY_URL || 'http://localhost:8080'
     );
 
     const openai = new OpenAIService(
       process.env.OPENAI_API_KEY as string,
-      dreamFactory
+      dreamFactory,
+      process.env.SERPER_API_KEY as string
     );
 
     const messages: ChatMessage[] = [
       {
         role: 'system',
-        content: `You are an agentic LLM with access to DreamFactory services and general knowledge.
-Your goal is to help users by providing comprehensive answers using both authorized DreamFactory data and, when necessary, your general knowledge.
+        content: `You are an agentic LLM with access to DreamFactory services and real-time web search capabilities.
+Your goal is to help users by providing comprehensive answers using:
+1. DreamFactory database data
+2. Real-time web search results
+3. Your general knowledge when appropriate
 
-IMPORTANT: Always follow this exact two-phase process for EVERY request:
+IMPORTANT: Always follow this EXACT process for EVERY database-related request:
 
 <thinking>
-PHASE 1: DreamFactory Data Search
-1. Primary Schema Discovery
-   - First, call /_schema endpoint to understand available tables
-   - Then, call /_schema/{primary_table} to get detailed field information
-   - Document the exact field names, types, and relationships
-   - NEVER assume field names - always verify them in the schema first
+PHASE 1: Schema Discovery (MANDATORY)
+1. List Available Services
+   - FIRST, call listServices() to see available services
+   - Example response: ["sqlserver", "mysql", etc.]
+   - Select the appropriate service for your query
 
-2. Relationship Analysis
-   - In the schema's 'related' array, look for relationships that might contain needed data
-   - For each relevant relationship, document:
-     * The exact relationship name (e.g., "Application.StateProvinces_by_StateProvinceID")
-     * The relationship type (belongs_to, has_many, many_many)
-     * The target table (ref_table) and field (ref_field)
-   - Call /_schema/{ref_table} to understand the related table's fields
-   - IMPORTANT: The relationship name in the 'related' array is what you must use in the ?related= parameter
+2. List Available Tables
+   - NEXT, call listTables(serviceName) to get all table names
+   - Example: listTables("sqlserver")
+   - Example response: ["Application.Cities", "Application.StateProvinces", etc.]
+   - NEVER assume table names exist - always verify first
 
-3. Query Construction
-   - If data needs to be joined:
-     * ALWAYS use ?related={exact_relationship_name} in your query
-     * Use the exact relationship name from the 'related' array
-     * You can combine multiple relationships with comma separation
-   - Build your filter using this EXACT format:
-     * For single condition: "(CityName='Abbeville')"
-     * For multiple conditions: "(CityName='Abbeville') and (StateProvinceID=1)"
-     * Use single quotes for string values
-     * No spaces around equals sign
-     * Single space before and after 'and'
-   - Example query structure:
-     /_table/Application.Cities?filter=(CityName='Abbeville') and (StateProvinceID=1)&related=Application.StateProvinces_by_StateProvinceID
+3. Get Table Schemas
+   - For EACH relevant table, call getTableSchema(serviceName, tableName)
+   - Example: getTableSchema("sqlserver", "Application.Cities")
+   - Document available fields and their types
+   - Document available relationships
+   - Example response:
+     {
+       "name": "Application.Cities",
+       "fields": [
+         {"name": "CityID", "type": "integer"},
+         {"name": "CityName", "type": "string"},
+         {"name": "StateProvinceID", "type": "integer"}
+       ],
+       "related": [
+         "Application.StateProvinces_by_StateProvinceID"
+       ]
+     }
 
-4. Response Processing
-   - When you receive the response:
-     * The related data will be nested under the relationship name
-     * Example: response.resource[0].Application.StateProvinces_by_StateProvinceID.SalesTerritory
-     * Always check if response.resource exists and has data
-     * Always check if the nested relationship data exists
-   - Extract and verify all needed fields
-   - If data is missing, note this for Phase 2
+PHASE 2: Query Construction
+1. Use ONLY verified table names and fields from schema
+2. Use EXACT relationship names from schema
+3. Build filters using verified field names:
+   - Single condition: "(CityName='Abbeville')"
+   - Multiple conditions: "(CityName='Abbeville') and (StateProvinceID=1)"
 
-PHASE 2: General Knowledge Integration
-If the DreamFactory data doesn't contain all the requested information:
-1. Clearly state what information was not found in the database
-2. Use your general knowledge to provide additional relevant information
-3. Be explicit about which parts of your answer come from general knowledge
-4. Maintain factual accuracy and avoid speculation
-5. If you're not certain about general knowledge information, say so
+PHASE 3: Data Processing
+1. Check if response contains data
+2. Navigate nested relationships correctly
+3. If data is missing, use web search or general knowledge
+
+PHASE 4: Web Search (if needed)
+1. Construct clear search queries
+2. Use webSearch function
+3. Combine with database data
+4. Cite sources and timestamps
 
 </thinking>
 
 Then provide your final response in this format:
 
-Answer: [Clear, complete answer combining both data sources when needed]
+Answer: [Clear, complete answer combining all data sources as needed]
 
 Data Sources & Details:
-1. DreamFactory Database:
-   - [What was found in the database, if anything]
-   - [Data path and relationships used]
-   - [If nothing relevant was found, explicitly state this]
+1. Schema Discovery:
+   - Services Found: [List services checked]
+   - Tables Found: [List relevant tables found]
+   - Available Fields: [List relevant fields and relationships]
 
-2. General Knowledge:
-   - [Additional information from general knowledge, if needed]
-   - [Only included when database information is incomplete or missing]
-   - [Clearly marked as coming from general knowledge]
+2. Database Results:
+   - [What was found in the database]
+   - [Data path and relationships used]
+   - [If nothing found, explain why]
+
+3. Web Search Results: (if used)
+   - [Search results with timestamps]
+   - [Source citations]
 
 Query Details:
 - Service: [Service name used]
@@ -123,18 +136,19 @@ Query Details:
 - Fields: [Fields accessed]
 
 Example Response:
-"Answer: Abbeville (StateProvinceID: 1) is in the Southeast sales territory and is served by Abbeville Municipal Airport (FAA: 0J5).
+"Answer: Abbeville is in the Southeast sales territory.
 
 Data Sources & Details:
-1. DreamFactory Database:
-   - Found: City of Abbeville in Alabama, Southeast sales territory
-   - Data Path: Cities → StateProvinces → SalesTerritory
-   - No airport information available in database
+1. Schema Discovery:
+   - Services Found: sqlserver
+   - Tables Found: Application.Cities, Application.StateProvinces
+   - Available Fields: CityName, StateProvinceID, SalesTerritory
+   - Relationships: Application.StateProvinces_by_StateProvinceID
 
-2. General Knowledge:
-   - Abbeville Municipal Airport (FAA: 0J5)
-   - Location: 2 miles northwest of city
-   - Public-use airport
+2. Database Results:
+   - Found: Abbeville in Application.Cities
+   - Related: StateProvince data with SalesTerritory field
+   - Data Path: Cities → StateProvinces → SalesTerritory
 
 Query Details:
 - Service: sqlserver
@@ -148,27 +162,57 @@ Query Details:
       },
     ];
 
-    const { response, endpoints } = await openai.chat(messages);
-    
-    // Extract thinking block and final response
-    let thinking = '';
-    let finalResponse = response;
-    
-    const thinkingMatch = response.match(/<thinking>([\s\S]*?)<\/thinking>/);
-    if (thinkingMatch) {
-      thinking = thinkingMatch[1].trim();
-      finalResponse = response.replace(/<thinking>[\s\S]*?<\/thinking>/, '').trim();
-    }
+    try {
+      const { response, endpoints } = await openai.chat(messages);
+      
+      // Extract thinking block and final response
+      let thinking = '';
+      let finalResponse = response;
+      
+      const thinkingMatch = response.match(/<thinking>([\s\S]*?)<\/thinking>/);
+      if (thinkingMatch) {
+        thinking = thinkingMatch[1].trim();
+        finalResponse = response.replace(/<thinking>[\s\S]*?<\/thinking>/, '').trim();
+      }
 
-    return NextResponse.json({ 
-      message: finalResponse,
-      thinking: thinking,
-      endpoints: endpoints 
-    });
+      return NextResponse.json({ 
+        message: finalResponse,
+        thinking: thinking,
+        endpoints: endpoints 
+      });
+    } catch (error) {
+      console.error('OpenAI/DreamFactory error:', error);
+
+      // Check if this is a DreamFactory error
+      if (error instanceof Error && (
+        error.name === 'DreamFactoryError' || 
+        (error.message.includes('403') && error.message.includes('Access Forbidden'))
+      )) {
+        // Extract the component name from the error message if possible
+        const componentMatch = error.message.match(/component '([^']+)'/);
+        const component = componentMatch ? componentMatch[1] : 'the requested resource';
+        
+        return NextResponse.json(
+          { 
+            error: `You don't have permission to access ${component}. Please contact your DreamFactory administrator to request access to this resource.`,
+            type: 'permission_denied'
+          },
+          { status: 403 }
+        );
+      }
+
+      // Re-throw other errors to be handled by outer catch
+      throw error;
+    }
   } catch (error) {
     console.error('Chat error:', error);
+
+    // Handle all other errors
     return NextResponse.json(
-      { error: 'Failed to process chat message' },
+      { 
+        error: 'An error occurred while processing your request. Please try again or contact support if the problem persists.',
+        type: 'internal_error'
+      },
       { status: 500 }
     );
   }

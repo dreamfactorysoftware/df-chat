@@ -1,4 +1,5 @@
 import { DreamFactoryService, DreamFactorySchema, DreamFactoryQueryParams, DreamFactoryTableResponse, Employee, Department, DeptEmployee, DeptManager, Salary, Title } from './types';
+import { AuthService } from './auth';
 
 interface QueryParams {
   filter?: string;
@@ -18,15 +19,15 @@ interface DreamFactoryResponse<T> {
   };
 }
 
+const API_KEY = 'daf9692e1ec76c2623f3c1e5a951590a902931a2a8900d53520040fa04f8786c';
+
 export class DreamFactoryTool {
-  private apiKey: string;
   private baseUrl: string;
   private cachedSchema: Record<string, DreamFactorySchema> = {};
   private cachedTableSchemas: Record<string, Record<string, any>> = {};
   private requestedEndpoints: string[] = [];
 
-  constructor(apiKey: string, baseUrl: string) {
-    this.apiKey = apiKey;
+  constructor(baseUrl: string) {
     this.baseUrl = baseUrl.replace(/\/+$/, '');
     this.requestedEndpoints = [];
     console.log('DreamFactoryTool initialized with:', {
@@ -49,11 +50,17 @@ export class DreamFactoryTool {
     this.requestedEndpoints.push(`${this.baseUrl}/api/v2/${cleanEndpoint}`);
     console.log('Making request to:', url);
     
+    const sessionToken = AuthService.getSessionToken();
+    if (!sessionToken) {
+      throw new Error('No active session found');
+    }
+
     try {
       const response = await fetch(url, {
         ...options,
         headers: {
-          'X-DreamFactory-API-Key': this.apiKey,
+          'X-DreamFactory-API-Key': API_KEY,
+          'X-DreamFactory-Session-Token': sessionToken,
           'Accept': 'application/json',
           ...options.headers,
         },

@@ -1,15 +1,18 @@
 import OpenAI from 'openai';
 import { ChatMessage } from './types';
 import { DreamFactoryTool } from './dreamfactory';
+import { SearchService } from './search';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 
 export class OpenAIService {
   private openai: OpenAI;
   private dreamFactoryTool: DreamFactoryTool;
+  private searchService: SearchService;
 
-  constructor(apiKey: string, dreamFactoryTool: DreamFactoryTool) {
-    this.openai = new OpenAI({ apiKey });
+  constructor(openaiApiKey: string, dreamFactoryTool: DreamFactoryTool, serperApiKey: string) {
+    this.openai = new OpenAI({ apiKey: openaiApiKey });
     this.dreamFactoryTool = dreamFactoryTool;
+    this.searchService = new SearchService(serperApiKey);
   }
 
   private readonly functions = [
@@ -175,6 +178,20 @@ export class OpenAIService {
         required: ['serviceName', 'tableName', 'name'],
       },
     },
+    {
+      name: 'webSearch',
+      description: 'Search the internet for real-time information like weather, news, stock prices, etc.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: {
+            type: 'string',
+            description: 'The search query to find real-time information',
+          },
+        },
+        required: ['query'],
+      },
+    },
   ];
 
   private convertToChatMessage(msg: ChatMessage): ChatCompletionMessageParam {
@@ -196,89 +213,9 @@ export class OpenAIService {
       // Clear previous endpoints at the start of each chat
       this.dreamFactoryTool.clearRequestedEndpoints();
 
-      // Add system message to emphasize checking table existence and handling related data
-      const systemMessage: ChatMessage = {
-        role: 'system',
-        content: `You are an agentic LLM with access to DreamFactory services and general knowledge.
-Your goal is to help users by providing verified answers using only authorized DreamFactory endpoints and data.
-
-IMPORTANT: Always follow this exact process for EVERY request:
-
-<thinking>
-1. Primary Schema Discovery
-   - First, call /_schema endpoint to understand available tables
-   - Then, call /_schema/{primary_table} to get detailed field information
-   - Document the exact field names, types, and relationships
-   - NEVER assume field names - always verify them in the schema first
-
-2. Relationship Analysis
-   - In the schema's 'related' array, look for relationships that might contain needed data
-   - For each relevant relationship, document:
-     * The exact relationship name (e.g., "Application.StateProvinces_by_StateProvinceID")
-     * The relationship type (belongs_to, has_many, many_many)
-     * The target table (ref_table) and field (ref_field)
-   - Call /_schema/{ref_table} to understand the related table's fields
-   - IMPORTANT: The relationship name in the 'related' array is what you must use in the ?related= parameter
-
-3. Query Construction
-   - If data needs to be joined:
-     * ALWAYS use ?related={exact_relationship_name} in your query
-     * Use the exact relationship name from the 'related' array
-     * You can combine multiple relationships with comma separation
-   - Build your filter using verified field names
-   - Example query structure:
-     /_table/{primary_table}?related={relationship_name}&filter={field}={value}
-
-4. Response Processing
-   - When you receive the response:
-     * The related data will be nested under the relationship name
-     * Example: response.resource[0].Application.StateProvinces_by_StateProvinceID.SalesTerritory
-     * Always check if response.resource exists and has data
-     * Always check if the nested relationship data exists
-   - Extract and verify all needed fields
-   - If data is missing, explain what was expected vs what was found
-
-5. Answer Construction
-   - Start with a clear, direct answer to the question
-   - Include the specific values found (e.g., "The sales territory is Southeast")
-   - Show the data path: City → State Province → Sales Territory
-   - If relevant, include additional context from the related data
-
-</thinking>
-
-Then provide your final response in this format:
-
-Answer: [Direct answer to the question]
-
-Data Details:
-- Primary Record: [Key details from the main record]
-- Related Data: [Key details from related records]
-- Data Path: [How the data was connected]
-
-Query Details:
-- Service: [Service name used]
-- Tables: [Tables accessed]
-- Relationships: [Relationships used]
-- Fields: [Fields accessed]
-
-Example Response:
-"Answer: Abbeville (StateProvinceID: 1) is in the Southeast sales territory.
-
-Data Details:
-- Primary Record: Abbeville (CityID: 6)
-- Related Data: State: Alabama, Territory: Southeast
-- Data Path: Cities → StateProvinces → SalesTerritory
-
-Query Details:
-- Service: sqlserver
-- Tables: Application.Cities, Application.StateProvinces
-- Relationships: Application.StateProvinces_by_StateProvinceID
-- Fields: CityName, StateProvinceID, SalesTerritory"`
-      };
-
       const response = await this.openai.chat.completions.create({
         model: 'gpt-4-0125-preview',
-        messages: [systemMessage, ...messages].map(this.convertToChatMessage),
+        messages: messages.map(this.convertToChatMessage),
         functions: this.functions,
         function_call: 'auto',
       });
@@ -290,48 +227,62 @@ Query Details:
         const args = JSON.parse(message.function_call.arguments);
 
         let functionResult;
-        switch (functionName) {
-          case 'listServices':
-            functionResult = await this.dreamFactoryTool.listServices();
-            break;
-          case 'getServiceSchema':
-            functionResult = await this.dreamFactoryTool.getServiceSchema(args.serviceName);
-            break;
-          case 'getTableSchema':
-            functionResult = await this.dreamFactoryTool.getTableSchema(args.serviceName, args.tableName);
-            break;
-          case 'listTables':
-            functionResult = await this.dreamFactoryTool.listTables(args.serviceName);
-            break;
-          case 'queryTable':
-            functionResult = await this.dreamFactoryTool.queryTable(
-              args.serviceName,
-              args.tableName,
-              args.queryParams
-            );
-            break;
-          case 'searchTableByField':
-            functionResult = await this.dreamFactoryTool.searchTableByField(
-              args.serviceName,
-              args.tableName,
-              args.fieldName,
-              args.value,
-              args.exact,
-              args.related
-            );
-            break;
-          case 'searchByName':
-            functionResult = await this.dreamFactoryTool.searchByName(
-              args.serviceName,
-              args.tableName,
-              args.name,
-              args.firstNameField,
-              args.lastNameField,
-              args.related
-            );
-            break;
-          default:
-            throw new Error(`Unknown function: ${functionName}`);
+        try {
+          switch (functionName) {
+            case 'webSearch':
+              const searchResults = await this.searchService.search(args.query);
+              functionResult = SearchService.summarizeResults(searchResults);
+              break;
+            case 'listServices':
+              functionResult = await this.dreamFactoryTool.listServices();
+              break;
+            case 'getServiceSchema':
+              functionResult = await this.dreamFactoryTool.getServiceSchema(args.serviceName);
+              break;
+            case 'getTableSchema':
+              functionResult = await this.dreamFactoryTool.getTableSchema(args.serviceName, args.tableName);
+              break;
+            case 'listTables':
+              functionResult = await this.dreamFactoryTool.listTables(args.serviceName);
+              break;
+            case 'queryTable':
+              functionResult = await this.dreamFactoryTool.queryTable(
+                args.serviceName,
+                args.tableName,
+                args.queryParams
+              );
+              break;
+            case 'searchTableByField':
+              functionResult = await this.dreamFactoryTool.searchTableByField(
+                args.serviceName,
+                args.tableName,
+                args.fieldName,
+                args.value,
+                args.exact,
+                args.related
+              );
+              break;
+            case 'searchByName':
+              functionResult = await this.dreamFactoryTool.searchByName(
+                args.serviceName,
+                args.tableName,
+                args.name,
+                args.firstNameField,
+                args.lastNameField,
+                args.related
+              );
+              break;
+            default:
+              throw new Error(`Unknown function: ${functionName}`);
+          }
+        } catch (error) {
+          // Preserve DreamFactory error structure
+          if (error instanceof Error && error.message.includes('403') && error.message.includes('Access Forbidden')) {
+            const dfError = new Error(error.message);
+            dfError.name = 'DreamFactoryError';
+            throw dfError;
+          }
+          throw error;
         }
 
         messages.push({
@@ -355,7 +306,15 @@ Query Details:
         endpoints
       };
     } catch (error) {
-      console.error('OpenAI error:', error);
+      // Preserve DreamFactory error structure when rethrowing
+      if (error instanceof Error && (
+        error.name === 'DreamFactoryError' || 
+        (error.message.includes('403') && error.message.includes('Access Forbidden'))
+      )) {
+        const dfError = new Error(error.message);
+        dfError.name = 'DreamFactoryError';
+        throw dfError;
+      }
       throw error;
     }
   }
